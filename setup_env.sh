@@ -16,6 +16,10 @@
 
 export LZH_WS="$HOME/g1d_ros2_lzh"
 
+# Unitree SDK2 is a local CMake package used by lzh_sdk_bridge.
+export CMAKE_PREFIX_PATH="$HOME/unitree_sdk2/install${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
+export LD_LIBRARY_PATH="$HOME/unitree_sdk2/install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
 # ---------- ① ROS_DOMAIN_ID ----------
 export ROS_DOMAIN_ID=42
 

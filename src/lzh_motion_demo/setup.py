@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'lzh_gripper_client = lzh_motion_demo.gripper_client:main',
         ],
     },
 )
