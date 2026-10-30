@@ -59,6 +59,14 @@ public:
     control_period_ms_ =
       declare_parameter<double>("control_period_ms", 5.0);
 
+    // Arm commands go over rt/arm_sdk, the channel the robot blends with its
+    // own gravity-compensated arm controller (weight in motor_cmd[29].q).
+    // rt/lowcmd bypasses that controller: with tau=0 the arms sag by
+    // gravity/kp and every joint this node touches loses its support.
+    arm_sdk_topic_ = declare_parameter<std::string>("arm_sdk_topic", "rt/arm_sdk");
+    arm_sdk_weight_rate_ =
+      declare_parameter<double>("arm_sdk_weight_rate", 0.5);  // 1/0 in ~2 s
+
     // Independent Dex1-1 commissioning gate: disabled by default.
     // Enabling this does NOT enable either arm FollowJointTrajectory server.
     enable_gripper_real_execution_ =
@@ -286,6 +294,13 @@ private:
   static constexpr std::array<std::size_t, 2> GRIPPER_MOTOR_IDS{{31, 33}};
   std::string network_interface_{"eno2"};
   double control_period_ms_{5.0};
+  // rt/arm_sdk slots: motor_cmd[29].q() is the SDK weight (0 = the robot's own
+  // arm controller, 1 = this node). Official G1 examples write it this way.
+  static constexpr std::size_t ARM_SDK_WEIGHT_SLOT = 29;
+  std::string arm_sdk_topic_{"rt/arm_sdk"};
+  double arm_sdk_weight_rate_{0.5};
+  std::atomic<float> arm_sdk_weight_{0.0f};
+  std::atomic<float> arm_sdk_weight_target_{0.0f};
   double max_start_error_rad_{0.03};
   double arm_max_trajectory_speed_rad_s_{0.5};
   double lowstate_timeout_sec_{0.20};
@@ -336,13 +351,22 @@ private:
   std::atomic<bool> both_arm_goal_active_{false};
   std::thread writer_;
 
+  // Official G1 arm gains (unitree_lerobot robot_arm.py): shoulder/elbow 80/3,
+  // wrist 40/1.5. The bring-up example's 40/1 leaves a steady-state error of
+  // gravity/kp (~0.09 rad at the elbow); 80 halves it and the arm_sdk weight
+  // ramp removes the takeover step. Residual droop still has to be measured
+  // on the bench: tau stays 0, so this is a PD hold either way.
   const std::array<float, N> kp_{
     0,0,0,0,0,0, 0,0,0,0,0,0, 60,0,40,
-    40,40,40,40,40,40,40, 40,40,40,40,40,40,40
+    80,80,80,80, 40,40,40,
+    80,80,80,80, 40,40,40,
+    0,0,0,0,0,0
   };
   const std::array<float, N> kd_{
     0,0,0,0,0,0, 0,0,0,0,0,0, 1,0,1,
-    1,1,1,1,1,1,1, 1,1,1,1,1,1,1
+    3,3,3,3, 1.5,1.5,1.5,
+    3,3,3,3, 1.5,1.5,1.5,
+    0,0,0,0,0,0
   };
 
   static uint32_t crc32_core(uint32_t * ptr, uint32_t len)
@@ -370,7 +394,7 @@ private:
 
     ChannelFactory::Instance()->Init(0, network_interface_);
 
-    lowcmd_pub_.reset(new ChannelPublisher<LowCmd_>("rt/lowcmd"));
+    lowcmd_pub_.reset(new ChannelPublisher<LowCmd_>(arm_sdk_topic_));
     lowcmd_pub_->InitChannel();
 
     lowstate_sub_.reset(new ChannelSubscriber<LowState_>("rt/lowstate"));
@@ -469,7 +493,21 @@ private:
         gripper_enabled = gripper_control_initialized_;
       }
 
-      if (enabled && lowcmd_pub_) {
+      // Ramp the arm_sdk weight toward its target: 1 while a goal owns the
+      // arms, 0 after it ends. Official examples blend in and out this way so
+      // control never changes hands abruptly.
+      const float weight_target = arm_sdk_weight_target_.load();
+      float weight = arm_sdk_weight_.load();
+      const float weight_step =
+        static_cast<float>(arm_sdk_weight_rate_ * (control_period_ms_ / 1000.0));
+      weight = (weight < weight_target)
+        ? std::min(weight_target, weight + weight_step)
+        : std::max(weight_target, weight - weight_step);
+      arm_sdk_weight_.store(weight);
+
+      // Keep publishing while the weight ramps down, so the blend returns to
+      // the robot's own controller instead of stopping mid-handover.
+      if ((enabled || weight > 0.0f) && lowcmd_pub_) {
         std::array<double, N> unused{};
         uint8_t mode = 0;
         double age = 0.0;
@@ -523,11 +561,14 @@ private:
 
           // The message always contains 35 motor slots. Explicitly leave
           // non-body, non-gripper slots disabled rather than using body gains.
+          // Slot 29 carries the rt/arm_sdk weight, not a motor command.
           for (std::size_t i = BODY_MOTOR_COUNT; i < N; ++i) {
             auto & motor = cmd.motor_cmd().at(i);
             motor.mode() = 0;
             motor.tau() = 0.0F;
-            motor.q() = static_cast<float>(unused[i]);
+            motor.q() = (i == ARM_SDK_WEIGHT_SLOT)
+              ? std::clamp(weight, 0.0f, 1.0f)
+              : static_cast<float>(unused[i]);
             motor.dq() = 0.0F;
             motor.kp() = 0.0F;
             motor.kd() = 0.0F;
@@ -741,6 +782,15 @@ private:
       gripper_control_initialized_[side] = true;
       command_enabled_ = true;
     }
+
+    // Dex1 shares the arm_sdk message, so the channel must be blended in even
+    // for a gripper-only goal. Every body joint is already seeded at its
+    // measured q, and the release guard hands the arms back on exit.
+    struct WeightRelease {
+      std::atomic<float> & target;
+      ~WeightRelease() { target.store(0.0f); }
+    } weight_release{arm_sdk_weight_target_};
+    arm_sdk_weight_target_.store(1.0f);
 
     RCLCPP_WARN(get_logger(),
       "DEX1 REAL side=%zu: motor %zu, %.4f -> %.4f rad. "
@@ -1286,9 +1336,39 @@ private:
       command_enabled_ = true;
     }
 
+    // Hand the arms over exactly the way the official examples do: every joint
+    // is already seeded with its measured q, then the arm_sdk weight ramps
+    // 0 -> 1. Releasing the weight on every exit path restores the robot's own
+    // arm controller, so an abort or a cancel never drops the arms.
+    struct WeightRelease {
+      std::atomic<float> & target;
+      ~WeightRelease() { target.store(0.0f); }
+    } weight_release{arm_sdk_weight_target_};
+
+    arm_sdk_weight_target_.store(1.0f);
+    {
+      const auto ramp_start = std::chrono::steady_clock::now();
+      while (rclcpp::ok() && arm_sdk_weight_.load() < 0.98f) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        const double waited = std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - ramp_start).count();
+        if (waited > 5.0) {
+          real_goal_active_.store(false);
+          auto result = std::make_shared<FollowJT::Result>();
+          result->error_code = FollowJT::Result::INVALID_GOAL;
+          result->error_string =
+            "arm_sdk weight did not reach 1.0; arms not handed over";
+          RCLCPP_ERROR(get_logger(), "%s", result->error_string.c_str());
+          gh->abort(result);
+          return;
+        }
+      }
+    }
+
     RCLCPP_WARN(get_logger(),
-      "REAL EXECUTION STARTED on %s. Keep the hardware E-stop available.",
-      arm.c_str());
+      "REAL EXECUTION STARTED on %s (arm_sdk weight %.2f). "
+      "Keep the hardware E-stop available.",
+      arm.c_str(), static_cast<double>(arm_sdk_weight_.load()));
 
     const double tf = duration_sec(goal->trajectory.points.back().time_from_start);
     const auto start = std::chrono::steady_clock::now();
