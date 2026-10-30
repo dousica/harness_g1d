@@ -35,23 +35,20 @@ else
   bad "ROS_DOMAIN_ID=$ROS_DOMAIN_ID, 应为 42"
 fi
 
-# 2. AMENT_PREFIX_PATH
-echo "[2] AMENT_PREFIX_PATH"
-APT="${AMENT_PREFIX_PATH:-}"
-if [ -z "$APT" ]; then
-  warn "未 source 任何环境"
-else
-  bad_found=0
-  for p in $(echo "$APT" | tr ':' '\n'); do
+# 2. ROS-related paths
+echo "[2] ROS overlay paths"
+bad_found=0
+for name in AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH PYTHONPATH LD_LIBRARY_PATH; do
+  value="${!name:-}"
+  IFS=: read -r -a entries <<< "$value"
+  for p in "${entries[@]}"; do
     case "$p" in
-      */g1d_ros2_ws*|*/unitree_ros_official*|*/g1d_ros2_yqqh*|*/dex1*)
-        bad "污染: $p"; bad_found=1 ;;
+      *g1d_ros2_ws*|*unitree_ros_official*|*g1d_ros2_yqqh*)
+        bad "$name 污染: $p"; bad_found=1 ;;
     esac
   done
-  [ $bad_found -eq 0 ] && ok "无师兄/第三方 overlay 污染"
-  echo "     包含:"
-  echo "$APT" | tr ':' '\n' | sed 's/^/       - /'
-fi
+done
+[ $bad_found -eq 0 ] && ok "ROS 相关路径未混入禁止的 overlay"
 
 # 3. src 下的包名
 echo "[3] src/ 包名规范"

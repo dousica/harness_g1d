@@ -4,7 +4,7 @@
 #   用法: source ~/g1d_ros2_lzh/setup_env.sh
 #
 # 做三件事(顺序固定, 不可调换):
-#   ① 检查并设置 ROS_DOMAIN_ID=42   (与师兄的 domain 0 隔离)
+#   ① 要求调用者显式设置 ROS_DOMAIN_ID=42
 #   ② source 系统 ROS 2
 #   ③ source 我的 overlay
 #
@@ -16,12 +16,35 @@
 
 export LZH_WS="$HOME/g1d_ros2_lzh"
 
+if [ "${ROS_DOMAIN_ID:-}" != "42" ]; then
+  echo "[setup_env] 错误: 必须先显式 export ROS_DOMAIN_ID=42 (当前: ${ROS_DOMAIN_ID:-未设置})" >&2
+  return 1 2>/dev/null || exit 1
+fi
+
+_lzh_check_overlay_paths() {
+  local name value entry marker
+  local forbidden=(g1d_ros2_ws g1d_ros2_yqqh unitree_ros_official)
+  for name in AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH PYTHONPATH LD_LIBRARY_PATH; do
+    value="${!name:-}"
+    IFS=: read -r -a entries <<< "$value"
+    for entry in "${entries[@]}"; do
+      for marker in "${forbidden[@]}"; do
+        if [[ "$entry" == *"$marker"* ]]; then
+          echo "[setup_env] 错误: $name 混入了禁止的 overlay: $entry" >&2
+          return 1
+        fi
+      done
+    done
+  done
+}
+
+if ! _lzh_check_overlay_paths; then
+  return 1 2>/dev/null || exit 1
+fi
+
 # Unitree SDK2 is a local CMake package used by lzh_sdk_bridge.
 export CMAKE_PREFIX_PATH="$HOME/unitree_sdk2/install${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
 export LD_LIBRARY_PATH="$HOME/unitree_sdk2/install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-# ---------- ① ROS_DOMAIN_ID ----------
-export ROS_DOMAIN_ID=42
 
 # ---------- ② 系统 ROS ----------
 if ! ros2 --help >/dev/null 2>&1; then
@@ -36,15 +59,22 @@ else
 fi
 
 # ---------- 隔离自检 ----------
-if [ -n "${AMENT_PREFIX_PATH:-}" ]; then
-  for p in $(echo "$AMENT_PREFIX_PATH" | tr ':' '\n'); do
-    case "$p" in
-      */g1d_ros2_ws*|*/unitree_ros_official*|*/g1d_ros2_yqqh*)
-        echo "[setup_env] ❌ 隔离冲突: AMENT_PREFIX_PATH 中含有 $p" >&2
-        echo "[setup_env]    请开一个全新的终端重试" >&2
-        ;;
-    esac
-  done
+if ! _lzh_check_overlay_paths; then
+  return 1 2>/dev/null || exit 1
+fi
+has_lzh_overlay=0
+IFS=: read -r -a ament_entries <<< "${AMENT_PREFIX_PATH:-}"
+for entry in "${ament_entries[@]}"; do
+  case "$entry" in
+    "$LZH_WS"/install/*) has_lzh_overlay=1 ;;
+  esac
+done
+if [ "$has_lzh_overlay" -ne 1 ]; then
+  echo "[setup_env] 错误: 自己的 install overlay 未加载 ($LZH_WS/install)" >&2
+  return 1 2>/dev/null || exit 1
 fi
 
-echo "[setup_env] ✅ ROS_DOMAIN_ID=$ROS_DOMAIN_ID  工作空间=$LZH_WS"
+# 默认静默: 需要查看信息时先 export LZH_SETUP_QUIET=0 再 source
+if [ -z "${LZH_SETUP_QUIET:-1}" ] || [ "${LZH_SETUP_QUIET}" = "0" ]; then
+  echo "[setup_env] ROS_DOMAIN_ID=$ROS_DOMAIN_ID  工作空间=$LZH_WS"
+fi

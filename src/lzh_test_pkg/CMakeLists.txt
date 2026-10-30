@@ -11,6 +11,7 @@ find_package(rclcpp REQUIRED)
 
 # ---- 编译可执行程序 ----
 add_executable(lzh_hello_node src/lzh_hello_node.cpp)
+target_include_directories(lzh_hello_node PRIVATE include)
 ament_target_dependencies(lzh_hello_node rclcpp)
 
 # ---- 安装到 install/ 目录 ----

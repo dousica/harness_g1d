@@ -21,6 +21,7 @@
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
+#include "ros_environment_guard.hpp"
 
 #include <unitree/robot/channel/channel_factory.hpp>
 #include <unitree/robot/channel/channel_publisher.hpp>
@@ -1557,6 +1558,9 @@ private:
 
 int main(int argc, char ** argv)
 {
+  if (!lzh_ros_environment_is_valid()) {
+    return 2;
+  }
   rclcpp::init(argc, argv);
   rclcpp::spin(std::make_shared<G1DTrajectoryActionServer>());
   rclcpp::shutdown();

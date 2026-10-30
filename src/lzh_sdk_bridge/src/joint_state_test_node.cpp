@@ -3,6 +3,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
+#include "ros_environment_guard.hpp"
 
 using namespace std::chrono_literals;
 
@@ -69,6 +70,9 @@ private:
 
 int main(int argc, char * argv[])
 {
+    if (!lzh_ros_environment_is_valid()) {
+        return 2;
+    }
     rclcpp::init(argc, argv);
 
     rclcpp::spin(

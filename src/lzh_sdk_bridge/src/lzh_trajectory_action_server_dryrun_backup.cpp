@@ -13,6 +13,7 @@
 #include "control_msgs/action/follow_joint_trajectory.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
+#include "ros_environment_guard.hpp"
 
 class G1DTrajectoryActionServer : public rclcpp::Node
 {
@@ -443,6 +444,9 @@ private:
 
 int main(int argc, char ** argv)
 {
+  if (!lzh_ros_environment_is_valid()) {
+    return 2;
+  }
   rclcpp::init(argc, argv);
 
   auto node =

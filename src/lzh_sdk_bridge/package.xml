@@ -3,7 +3,7 @@
 <package format="3">
   <name>lzh_sdk_bridge</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>ROS 2 feedback and trajectory/action bridge for the LZH G1-D setup.</description>
   <maintainer email="yushu@todo.todo">yushu</maintainer>
   <license>TODO: License declaration</license>
 
